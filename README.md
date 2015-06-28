@@ -1,10 +1,13 @@
-# fluxer - Erlang client for InfluxDB #
+# fluxer - Erlang client for InfluxDB 0.9 #
 
+Copyright (c) 2015 Vladimir Goncharov
 Copyright (c) 2014 Sergey Abramyan
 
-__Version:__ 0.2.0
+__Version:__ 0.3.0
 
-[![Build Status](https://travis-ci.org/saa/fluxer.svg?branch=master)](http://travis-ci.org/saa/fluxer)
+    Adaptation for influx 0.9, throw out all except write_series and query. Switched from hackney to
+    httpc, because of problems with persistent connections. Added parameters for HTTP client (for
+    example: you can specify SSL certificates or SSL verify options).
 
 ## API
 
@@ -37,33 +40,41 @@ If need other settings, call fluxer:init/1. Example:
 ```erlang
 
 1> Config = #{
+    host => <<"influx_server.example.net">>,
     db => <<"test">>,
     port => 8086,
     user => <<"myuser">>,
     password => <<"mypassword">>,
-    ssl => true }.
+    ssl => true,
+    http_opts => [
+    {ssl, [
+        {certfile,"client_cert.pem"},
+        {cacertfile,"ca.pem"}
+    ]}
+    ]
+}.
 2> Flux = fluxer:init(Config).
-{flux,<<"test">>,<<"localhost">>,8086,<<"myuser">>,<<"mypassword">>,true}
+{flux,<<"test">>,<<"influx_server.example.net">>,8086,
+    <<"myuser">>,<<"mypassword">>,true,
+    [{ssl,[{certfile,"client_cert.pem"},
+        {cacertfile,"ca.pem"}]}]}
 ```
 
 ### Reading & Writing Data
-
-**Init default settings with database**
-
-```erlang
-
-1> Test = fluxer:init(#{ db => <<"test">> }).
-{flux,<<"test">>,<<"127.0.0.1">>,8086,<<"root">>,<<"root">>,false}
-```
 
 **Write series**
 
 ```erlang
 
-1> Test = fluxer:init(#{ db => <<"test">> }).
-{flux,<<"test">>,<<"127.0.0.1">>,8086,<<"root">>,<<"root">>,false}
-2> Data = #{ name => test_series, columns => [col1, col2], points => [[1, 2]] }.
-#{columns => [col1,col2],name => test_series,points => [[1,2]]}
+1> Flux = fluxer:init(Config).
+...
+2> Data = #{database => mydb, points => [#{fields => #{ value => 1000 },name => <<"nodemem">>,
+time => fun() -> {MSec,Sec,_USec}=now(), MSec*1000000+Sec end()} ], retentionPolicy => default, 
+tags => #{ node => <<"abc">> }}.
+#{database => mydb,
+    points => [#{fields => #{value => 1000},name => <<"nodemem">>,time => 1435503197}],
+    retentionPolicy => default,
+    tags => #{node => <<"abc">>}}
 3> fluxer:write_series(Flux, Data).
 ok
 ```
@@ -72,159 +83,27 @@ ok
 
 ```erlang
 
-1> Test = fluxer:init(#{ db => <<"test">> }).
-{flux,<<"test">>,<<"127.0.0.1">>,8086,<<"root">>,<<"root">>,false}
-2> fluxer:query(Test, <<"select * from test_series">>).
-{ok,[#{<<"columns">> => [<<"time">>,<<"sequence_number">>,<<"col2">>,
-        <<"col1">>],
-       <<"name">> => <<"test_series">>,
-       <<"points">> => [[1416060930055,290001,2,1]]}]}
+1> Flux = fluxer:init(Config).
+...
+2> fluxer:query(Flux,<<"SHOW measurements">>).
+{ok,#{<<"results">> => [#{<<"series">> => [#{<<"columns">> => [<<"name">>],
+    <<"name">> => <<"measurements">>,
+    <<"values">> => [[<<"conns">>],
+    [<<"cpu_load_short">>],
+    [<<"mem">>],
+    [<<"nodemem">>],
+    [<<"nodestatus">>],
+    [<<"nstatus">>],
+    [<<"status">>]]}]}]}}
+3> fluxer:query(Flux, <<"select node,value from mem where node='node31' limit 5">>).
+{ok,#{<<"results">> => [#{<<"series">> => [#{<<"columns">> => [<<"time">>,<<"value">>],
+    <<"name">> => <<"mem">>,
+    <<"tags">> => #{<<"node">> => <<"node31">>},
+    <<"values">> => [[<<"2015-06-05T20:19:26Z">>,1354596904.0],
+    [<<"2015-06-05T20:19:59Z">>,1356222384.0],
+    [<<"2015-06-05T20:20:32Z">>,1355411128.0],
+    [<<"2015-06-05T20:21:04Z">>,1355631568.0],
+    [<<"2015-06-05T20:21:37Z">>,1355001048.0]]}]}]}}
 ```
 
-### Administration & Security
 
-#### Databases
-
-**Get databases**
-
-```erlang
-
-1> Test = fluxer:init().
-{flux,undefined,<<"127.0.0.1">>,8086,<<"root">>,<<"root">>,false}
-2> fluxer:get_databases(Test).
-{ok,[#{<<"name">> => <<"test">>}]}
-```
-
-**Create database**
-
-```erlang
-
-1> fluxer:create_database(<<"db1">>, Flux).
-ok
-```
-
-**Delete database**
-
-```erlang
-
-1> fluxer:delete_database(<<"db1">>, Flux).
-ok
-```
-
-#### Cluster
-
-**Get cluster admins**
-
-```erlang
-
-1> fluxer:get_cluster_admins(Flux).
-{ok,[#{<<"name">> => <<"root">>}]}
-```
-
-**Add cluster admin**
-
-```erlang
-
-1> fluxer:add_cluster_admin(#{ name => <<"admin">>, password => <<"super password">> }, Flux).
-ok
-```
-
-**Update password for cluster admin**
-
-```erlang
-
-1> fluxer:update_cluster_admin_password(#{ name => <<"admin">>, password => <<"new password">> }, Flux).
-ok
-```
-
-**Delete cluster admin**
-
-```erlang
-
-1> fluxer:delete_cluster_admin(<<"admin">>, Flux).
-ok
-```
-
-**Remove server from cluster**
-
-```erlang
-
-1> fluxer:remove_server_from_cluster(<<"34">>, Flux).
-ok
-```
-
-#### Security
-
-**Add database user**
-
-```erlang
-
-1> Flux = fluxer:init(#{ db => <<"test">> }).
-2> fluxer:add_database_user(#{ name => <<"user1">>, password => <<"password1">> }, Flux).
-ok
-```
-
-**Delete database user**
-
-```erlang
-
-1> Flux = fluxer:init(#{ db => <<"test">> }).
-2> fluxer:delete_database_user(<<"user1">>, Flux).
-ok
-```
-
-**Update user password**
-
-```erlang
-
-1> Flux = fluxer:init(#{ db => <<"test">> }).
-2> fluxer:update_user_password(#{ name => <<"user1">>, password => <<"new password1">> }, Flux).
-ok
-```
-
-**Get database users**
-
-```erlang
-
-1> Flux = fluxer:init(#{ db => <<"test">> }).
-2> fluxer:get_database_users(Flux).
-{ok,[#{<<"isAdmin">> => true,
-       <<"name">> => <<"test">>,
-       <<"readFrom">> => <<".*">>,
-       <<"writeTo">> => <<".*">>},
-     #{<<"isAdmin">> => false,
-       <<"name">> => <<"user1">>,
-       <<"readFrom">> => <<".*">>,
-       <<"writeTo">> => <<".*">>},
-     #{<<"isAdmin">> => false,
-       <<"name">> => <<"user2">>,
-       <<"readFrom">> => <<".*">>,
-       <<"writeTo">> => <<".*">>}]}
-```
-
-**Add database user admin privileges**
-
-```erlang
-
-1> Flux = fluxer:init(#{ db => <<"test">> }).
-2> fluxer:add_database_admin_priv(<<"user1">>, Flux).
-ok
-```
-
-**Delete database user admin privileges**
-
-```erlang
-
-1> Flux = fluxer:init(#{ db => <<"test">> }).
-2> fluxer:delete_database_admin_priv(<<"user1">>, Flux).
-ok
-```
-
-**Limiting user access**
-
-```erlang
-
-1> Flux = fluxer:init(#{ db => <<"test">> }).
-2> fluxer:update_database_user(#{ name => <<"user1">>, readFrom => <<"^$">>, writeTo => <<".*">> }, Flux).
-ok
-```
